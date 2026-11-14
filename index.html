@@ -163,7 +163,7 @@ for(const k of Object.keys(LOOKS)){ const d=document.createElement('div'); d.cla
 $('amt').oninput=e=>{ amount=e.target.value/100; $('amtv').textContent=e.target.value; refresh(); };
 $('again').onclick=()=>$('file').click();
 $('file').onchange=async e=>{
-  const all=[...e.target.files]; e.target.value='';
+  const all=[...e.target.files]; e.target.value=''; if(all.length) $('msg').textContent='불러오는 중…';
   const vids=all.filter(isVideo), ims=all.filter(f=>!isVideo(f)&&isImage(f));
   if(vids.length){ files=[vids[0]]; cur=0; $('thumbs').innerHTML=''; if(ims.length||vids.length>1) $('msg').textContent='영상은 한 번에 1개씩 바꿀 수 있어요. 첫 번째 영상만 열었어요.'; await loadVideo(vids[0]); return; }
   if(!ims.length) return; files=ims; cur=0; buildThumbs(); await loadCurrent(); };
@@ -248,14 +248,29 @@ function drawVideo(forceSplit){
 function sizeCanvas(longMax){ const vw=vid.videoWidth, vh=vid.videoHeight; const s=Math.min(1, longMax/Math.max(vw,vh)); cV.width=Math.round(vw*s/2)*2; cV.height=Math.round(vh*s/2)*2; }
 function loop(){ if(!rafOn) return; if(!exporting) drawVideo(); if(vid && vid.requestVideoFrameCallback) vid.requestVideoFrameCallback(loop); else requestAnimationFrame(loop); }
 function stopVideo(){ rafOn=false; if(vid){ vid.pause(); } }
+let vidURL=null;
+function waitAny(el, evs, ms){ return new Promise(res=>{ let done=false; const fin=(v)=>{ if(done) return; done=true; evs.forEach(e=>el.removeEventListener(e,h)); clearTimeout(t); res(v); }; const h=(e)=>fin(e.type); evs.forEach(e=>el.addEventListener(e,h)); const t=setTimeout(()=>fin('timeout'),ms); }); }
 async function loadVideo(file){
   stopVideo(); mode='video'; img=null; readyFile=null; $('out').style.display='none'; setSaveLabel();
+  const dropSpan=$('drop').querySelector('span'); const oldTxt=dropSpan.textContent;
+  dropSpan.textContent='영상 불러오는 중… 잠시만요'; $('msg').textContent='영상 불러오는 중…';
   if(!initGL()) return;
-  if(!vid){ vid=document.createElement('video'); vid.playsInline=true; vid.setAttribute('playsinline',''); vid.muted=true; vid.loop=true; vid.crossOrigin='anonymous'; }
-  vid.src=URL.createObjectURL(file);
-  try{ await new Promise((res,rej)=>{ vid.onloadeddata=res; vid.onerror=()=>rej(new Error('이 영상 형식은 열 수 없어요.')); }); }catch(err){ $('msg').textContent=err.message; return; }
+  if(!vid){ vid=document.createElement('video'); vid.playsInline=true; vid.setAttribute('playsinline',''); vid.setAttribute('webkit-playsinline',''); vid.muted=true; vid.defaultMuted=true; vid.setAttribute('muted',''); vid.loop=true; vid.preload='auto';
+    vid.style.cssText='position:fixed;left:0;top:0;width:2px;height:2px;opacity:0.01;pointer-events:none;'; document.body.appendChild(vid); }
+  if(vidURL) URL.revokeObjectURL(vidURL); vidURL=URL.createObjectURL(file);
+  vid.src=vidURL; vid.load();
+  // iPhone Safari often does not decode a frame until playback starts, so start muted playback right away
+  vid.play().catch(()=>{});
+  let r=await waitAny(vid,['loadeddata','canplay','playing','error'],20000);
+  if(r!=='error' && vid.readyState<2){ vid.play().catch(()=>{}); r=await waitAny(vid,['loadeddata','canplay','playing','error'],10000); }
+  if(r==='error' || vid.readyState<2 || !vid.videoWidth){
+    dropSpan.textContent=oldTxt; mode='photo';
+    $('msg').textContent = r==='error' ? `이 영상은 열 수 없어요 (오류 ${vid.error?vid.error.code:'?'}). 다른 영상으로 해 주세요.` : '영상을 불러오지 못했어요. 페이지를 새로고침한 뒤 다시 골라 주세요.';
+    return;
+  }
+  dropSpan.textContent=oldTxt; $('msg').textContent='';
   cA.style.display='none'; cB.style.display='none'; cV.style.display='block'; showViewer();
-  sizeCanvas(1080); setSplit(split);
+  sizeCanvas(960); setSplit(split);
   vid.muted=true; vid.loop=true; try{ await vid.play(); }catch(e){}
   rafOn=true; loop(); drawVideo();
   if(vid.duration>90) $('msg').textContent=`영상이 ${Math.round(vid.duration)}초예요. 저장할 때 영상 길이만큼 시간이 걸려요.`;
@@ -278,7 +293,7 @@ function exportVideo(){
   const p=vid.play(); rec.start(1000); frame();
   if(p&&p.catch) p.catch(err=>{ exporting=false; if(rec.state!=='inactive') rec.stop(); $('msg').textContent='재생을 시작하지 못했어요. 저장 버튼을 다시 눌러 주세요.'; });
   done.then(async()=>{
-    const wasOk=exporting; exporting=false; vid.onended=null; vid.muted=true; vid.loop=true; sizeCanvas(1080); vid.play().catch(()=>{});
+    const wasOk=exporting; exporting=false; vid.onended=null; vid.muted=true; vid.loop=true; sizeCanvas(960); vid.play().catch(()=>{});
     $('busy').style.display='none'; $('save').disabled=false; $('again').disabled=false;
     if(!wasOk||!chunks.length) return;
     const type=(rec.mimeType||mime||'video/mp4').split(';')[0]; const ext=type.includes('webm')?'webm':'mp4';
