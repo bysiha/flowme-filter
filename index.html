@@ -65,6 +65,7 @@
     <span>사진 여러 장 또는 영상 1개</span>
   </label>
   <input id="file" type="file" accept="image/*,video/*" multiple>
+  <div id="status" style="display:none;font-size:13px;line-height:1.55;color:#8a3b2b;background:#fff;border:1px solid #ecd9d3;border-radius:12px;padding:12px 14px;margin-top:12px;"></div>
 
   <div class="viewer" id="viewer">
     <canvas id="cAfter"></canvas>
@@ -153,6 +154,8 @@ async function processPixels(src, dst, w, h, name, amount, onProgress){
 }
 
 // ---- UI ----
+window.addEventListener('error',e=>{ try{ const el=document.getElementById('status'); el.style.display='block'; el.textContent='오류: '+e.message; }catch(_){} });
+window.addEventListener('unhandledrejection',e=>{ try{ const el=document.getElementById('status'); el.style.display='block'; el.textContent='오류: '+(e.reason&&e.reason.message||e.reason); }catch(_){} });
 const $=id=>document.getElementById(id);
 let files=[], cur=0, img=null, name='Clear', amount=1, split=0.5, readyFile=null, token=0, mode='photo', exporting=false;
 const cA=$('cAfter'), cB=$('cBefore'), cV=$('cVid'), viewer=$('viewer');
@@ -162,10 +165,19 @@ const fwrap=$('filters');
 for(const k of Object.keys(LOOKS)){ const d=document.createElement('div'); d.className='f'+(k===name?' on':''); d.dataset.k=k; d.innerHTML=`<div class="n">${k}</div><div class="d">${LOOKS[k].ko}</div>`; d.onclick=()=>{ if(exporting) return; name=k; [...fwrap.children].forEach(e=>e.classList.toggle('on',e.dataset.k===k)); refresh(); }; fwrap.appendChild(d); }
 $('amt').oninput=e=>{ amount=e.target.value/100; $('amtv').textContent=e.target.value; refresh(); };
 $('again').onclick=()=>$('file').click();
+function setStatus(t){ const el=$('status'); if(!t){ el.style.display='none'; el.textContent=''; return; } el.style.display='block'; el.textContent=t; }
+function fileInfo(f){ return `${f.name||'(이름 없음)'} · ${f.type||'형식 정보 없음'} · ${(f.size/1e6).toFixed(1)}MB`; }
+// detect the case where Safari reloaded the page while opening a video (usually memory)
+try{ const was=sessionStorage.getItem('fm_loading'); if(was){ sessionStorage.removeItem('fm_loading'); setStatus('지난번 영상을 여는 중에 페이지가 다시 시작됐어요. 영상이 너무 커서 휴대폰 메모리가 부족했을 가능성이 커요. ('+was+')'); } }catch(e){}
 $('file').onchange=async e=>{
   const all=[...e.target.files]; e.target.value=''; if(all.length) $('msg').textContent='불러오는 중…';
   const vids=all.filter(isVideo), ims=all.filter(f=>!isVideo(f)&&isImage(f));
-  if(vids.length){ files=[vids[0]]; cur=0; $('thumbs').innerHTML=''; if(ims.length||vids.length>1) $('msg').textContent='영상은 한 번에 1개씩 바꿀 수 있어요. 첫 번째 영상만 열었어요.'; await loadVideo(vids[0]); return; }
+  setStatus('');
+  if(vids.length){ files=[vids[0]]; cur=0; $('thumbs').innerHTML=''; try{ sessionStorage.setItem('fm_loading', fileInfo(vids[0])); }catch(_){}
+    try{ await loadVideo(vids[0]); }catch(err){ mode='photo'; $('drop').querySelector('span').textContent='사진 여러 장 또는 영상 1개'; setStatus('영상을 열지 못했어요: '+(err&&err.message||err)+' ['+fileInfo(vids[0])+']'); }
+    try{ sessionStorage.removeItem('fm_loading'); }catch(_){}
+    if(ims.length||vids.length>1) $('msg').textContent='영상은 한 번에 1개씩 바꿀 수 있어요. 첫 번째 영상만 열었어요.'; return; }
+  if(!ims.length && all.length){ setStatus('고른 파일을 사진이나 영상으로 알아보지 못했어요. ['+all.map(fileInfo).join(', ')+']'); return; }
   if(!ims.length) return; files=ims; cur=0; buildThumbs(); await loadCurrent(); };
 function refresh(){ readyFile=null; $('out').style.display='none'; setSaveLabel(); if(mode==='photo') renderPreview(); else drawVideo(); }
 function setSaveLabel(){ $('save').textContent = mode==='video' ? '영상 저장하기' : (files.length>1?`저장하기 (${files.length}장)`:'저장하기'); }
@@ -222,7 +234,7 @@ function initGL(){
   gl=cV.getContext('webgl',{preserveDrawingBuffer:true,premultipliedAlpha:false,antialias:false});
   if(!gl){ $('msg').textContent='이 브라우저에서는 영상 보정이 안 돼요. 사파리나 크롬 최신 버전으로 열어 주세요.'; return false; }
   const sh=(type,src)=>{ const s=gl.createShader(type); gl.shaderSource(s,src); gl.compileShader(s); if(!gl.getShaderParameter(s,gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s)); return s; };
-  prog=gl.createProgram(); gl.attachShader(prog,sh(gl.VERTEX_SHADER,VS)); gl.attachShader(prog,sh(gl.FRAGMENT_SHADER,FS)); gl.linkProgram(prog); gl.useProgram(prog);
+  prog=gl.createProgram(); gl.attachShader(prog,sh(gl.VERTEX_SHADER,VS)); gl.attachShader(prog,sh(gl.FRAGMENT_SHADER,FS)); gl.linkProgram(prog); if(!gl.getProgramParameter(prog,gl.LINK_STATUS)) throw new Error('셰이더 연결 실패: '+gl.getProgramInfoLog(prog)); gl.useProgram(prog);
   const buf=gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER,buf); gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([-1,-1,1,-1,-1,1,1,1]),gl.STATIC_DRAW);
   const loc=gl.getAttribLocation(prog,'p'); gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc,2,gl.FLOAT,false,0,0);
   tex=gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D,tex);
@@ -254,7 +266,7 @@ async function loadVideo(file){
   stopVideo(); mode='video'; img=null; readyFile=null; $('out').style.display='none'; setSaveLabel();
   const dropSpan=$('drop').querySelector('span'); const oldTxt=dropSpan.textContent;
   dropSpan.textContent='영상 불러오는 중… 잠시만요'; $('msg').textContent='영상 불러오는 중…';
-  if(!initGL()) return;
+  if(!initGL()) throw new Error('이 브라우저에서 화면 보정(WebGL)을 쓸 수 없어요');
   if(!vid){ vid=document.createElement('video'); vid.playsInline=true; vid.setAttribute('playsinline',''); vid.setAttribute('webkit-playsinline',''); vid.muted=true; vid.defaultMuted=true; vid.setAttribute('muted',''); vid.loop=true; vid.preload='auto';
     vid.style.cssText='position:fixed;left:0;top:0;width:2px;height:2px;opacity:0.01;pointer-events:none;'; document.body.appendChild(vid); }
   if(vidURL) URL.revokeObjectURL(vidURL); vidURL=URL.createObjectURL(file);
@@ -263,11 +275,9 @@ async function loadVideo(file){
   vid.play().catch(()=>{});
   let r=await waitAny(vid,['loadeddata','canplay','playing','error'],20000);
   if(r!=='error' && vid.readyState<2){ vid.play().catch(()=>{}); r=await waitAny(vid,['loadeddata','canplay','playing','error'],10000); }
-  if(r==='error' || vid.readyState<2 || !vid.videoWidth){
-    dropSpan.textContent=oldTxt; mode='photo';
-    $('msg').textContent = r==='error' ? `이 영상은 열 수 없어요 (오류 ${vid.error?vid.error.code:'?'}). 다른 영상으로 해 주세요.` : '영상을 불러오지 못했어요. 페이지를 새로고침한 뒤 다시 골라 주세요.';
-    return;
-  }
+  if(r==='error'){ const code=vid.error?vid.error.code:'?'; try{ vid.removeAttribute('src'); vid.srcObject=file; vid.load(); vid.play().catch(()=>{}); r=await waitAny(vid,['loadeddata','canplay','playing','error'],15000); }catch(e2){ r='error'; }
+    if(r==='error'||vid.readyState<2) { dropSpan.textContent=oldTxt; throw new Error(`브라우저가 이 영상을 재생하지 못했어요 (오류 코드 ${code})`); } }
+  if(vid.readyState<2 || !vid.videoWidth){ dropSpan.textContent=oldTxt; throw new Error(`영상 첫 화면을 읽지 못했어요 (상태 ${vid.readyState}, ${r})`); }
   dropSpan.textContent=oldTxt; $('msg').textContent='';
   cA.style.display='none'; cB.style.display='none'; cV.style.display='block'; showViewer();
   sizeCanvas(960); setSplit(split);
